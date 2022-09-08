@@ -58,6 +58,11 @@ const deployArbitration: DeployFunction = async (hre: HardhatRuntimeEnvironment)
         })
       ).address
     );
+
+    await deploy("Multicall3", {
+      from: deployer,
+      log: true,
+    });
   }
   const pnk = pnkByChain.get(Number(await getChainId())) ?? AddressZero;
   const minStake = BigNumber.from(10).pow(20).mul(2);
