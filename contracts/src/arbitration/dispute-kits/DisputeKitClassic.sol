@@ -73,8 +73,9 @@ contract DisputeKitClassic is BaseDisputeKit, IEvidence {
     uint256 public constant ONE_BASIS_POINT = 10000; // One basis point, for scaling.
 
     RNG public rng; // The random number generator
-    uint256 public RNBlock; // The block number when the random number was requested.
-    uint256 public RN; // The current random number.
+    uint256 public rngRequestedBlock; // The block number requested to the random number.
+    uint256 public rngLookahead; // Minimum block distance between requesting and obtaining a random number.
+    uint256 public randomNumber; // The current random number.
     Phase public phase; // Current phase of this dispute kit.
     uint256 public disputesWithoutJurors; // The number of disputes that have not finished drawing jurors.
     Dispute[] public disputes; // Array of the locally created disputes.
@@ -116,13 +117,11 @@ contract DisputeKitClassic is BaseDisputeKit, IEvidence {
      *  @param _governor The governor's address.
      *  @param _core The KlerosCore arbitrator.
      *  @param _rng The random number generator.
+     *  @param _rngLookahead Lookahead value for rng.
      */
-    constructor(
-        address _governor,
-        KlerosCore _core,
-        RNG _rng
-    ) BaseDisputeKit(_governor, _core) {
+    constructor(address _governor, KlerosCore _core, RNG _rng, uint256 _rngLookahead) BaseDisputeKit(_governor, _core) {
         rng = _rng;
+        rngLookahead = _rngLookahead;
     }
 
     // ************************ //
@@ -145,10 +144,15 @@ contract DisputeKitClassic is BaseDisputeKit, IEvidence {
 
     /** @dev Changes the `_rng` storage variable.
      *  @param _rng The new value for the `RNGenerator` storage variable.
+     *  @param _rngLookahead The new value for the `rngLookahead` storage variable.
      */
-    function changeRandomNumberGenerator(RNG _rng) external onlyByGovernor {
+    function changeRandomNumberGenerator(RNG _rng, uint256 _rngLookahead) external onlyByGovernor {
         rng = _rng;
-        // TODO: if current phase is generating, call rng.requestRN() for the next block
+        rngLookahead = _rngLookahead;
+        if (phase == Phase.generating) {
+            rngRequestedBlock = block.number + rngLookahead;
+            rng.requestRandomness(rngRequestedBlock);
+        }
     }
 
     // ************************************* //
@@ -193,14 +197,12 @@ contract DisputeKitClassic is BaseDisputeKit, IEvidence {
         } else if (core.phase() == KlerosCore.Phase.freezing) {
             if (phase == Phase.resolving) {
                 require(disputesWithoutJurors > 0, "All the disputes have jurors");
-                require(block.number >= core.getFreezeBlock() + 20, "Too soon: L1 finality required");
-                // TODO: RNG process is currently unfinished.
-                RNBlock = block.number;
-                rng.requestRN(block.number);
+                rngRequestedBlock = core.freezeBlock() + rngLookahead;
+                rng.requestRandomness(rngRequestedBlock);
                 phase = Phase.generating;
             } else if (phase == Phase.generating) {
-                RN = rng.getRN(RNBlock);
-                require(RN != 0, "Random number is not ready yet");
+                randomNumber = rng.receiveRandomness(rngRequestedBlock);
+                require(randomNumber != 0, "Random number is not ready yet");
                 phase = Phase.drawing;
             } else if (phase == Phase.drawing) {
                 require(disputesWithoutJurors == 0, "Not ready for Resolving phase");
@@ -216,25 +218,23 @@ contract DisputeKitClassic is BaseDisputeKit, IEvidence {
      *  @param _coreDisputeID The ID of the dispute in Kleros Core.
      *  @return drawnAddress The drawn address.
      */
-    function draw(uint256 _coreDisputeID)
-        external
-        override
-        onlyByCore
-        notJumped(_coreDisputeID)
-        returns (address drawnAddress)
-    {
+    function draw(
+        uint256 _coreDisputeID
+    ) external override onlyByCore notJumped(_coreDisputeID) returns (address drawnAddress) {
         require(phase == Phase.drawing, "Should be in drawing phase");
 
         Dispute storage dispute = disputes[coreDisputeIDToLocal[_coreDisputeID]];
         Round storage round = dispute.rounds[dispute.rounds.length - 1];
 
-        bytes32 key = bytes32(core.getSubcourtID(_coreDisputeID)); // Get the ID of the tree.
-        uint256 drawnNumber = getRandomNumber();
+        (uint96 subcourtID, , , , ) = core.disputes(_coreDisputeID);
+        bytes32 key = bytes32(uint256(subcourtID)); // Get the ID of the tree.
 
-        uint256 K = core.getSortitionSumTreeK(key);
-        uint256 nodesLength = core.getSortitionSumTreeNodesLength(key);
+        (uint256 K, uint256 nodesLength, ) = core.getSortitionSumTree(key, 0);
         uint256 treeIndex = 0;
-        uint256 currentDrawnNumber = drawnNumber % core.getSortitionSumTreeNode(key, 0);
+        uint256 currentDrawnNumber = uint256(
+            keccak256(abi.encodePacked(randomNumber, _coreDisputeID, round.votes.length))
+        );
+        currentDrawnNumber %= core.getSortitionSumTreeNode(key, 0);
 
         // TODO: Handle the situation when no one has staked yet.
 
@@ -256,7 +256,7 @@ contract DisputeKitClassic is BaseDisputeKit, IEvidence {
             }
         }
 
-        bytes32 ID = core.getSortitionSumTreeID(key, treeIndex);
+        (, , bytes32 ID) = core.getSortitionSumTree(key, treeIndex);
         drawnAddress = stakePathIDToAccount(ID);
 
         if (postDrawCheck(_coreDisputeID, drawnAddress)) {
@@ -282,10 +282,8 @@ contract DisputeKitClassic is BaseDisputeKit, IEvidence {
         uint256[] calldata _voteIDs,
         bytes32 _commit
     ) external notJumped(_coreDisputeID) {
-        require(
-            core.getCurrentPeriod(_coreDisputeID) == KlerosCore.Period.commit,
-            "The dispute should be in Commit period."
-        );
+        (, , KlerosCore.Period period, , ) = core.disputes(_coreDisputeID);
+        require(period == KlerosCore.Period.commit, "The dispute should be in Commit period.");
         require(_commit != bytes32(0), "Empty commit.");
 
         Dispute storage dispute = disputes[coreDisputeIDToLocal[_coreDisputeID]];
@@ -313,17 +311,16 @@ contract DisputeKitClassic is BaseDisputeKit, IEvidence {
         uint256 _salt,
         string memory _justification
     ) external notJumped(_coreDisputeID) {
-        require(
-            core.getCurrentPeriod(_coreDisputeID) == KlerosCore.Period.vote,
-            "The dispute should be in Vote period."
-        );
+        (, , KlerosCore.Period period, , ) = core.disputes(_coreDisputeID);
+        require(period == KlerosCore.Period.vote, "The dispute should be in Vote period.");
         require(_voteIDs.length > 0, "No voteID provided");
 
         Dispute storage dispute = disputes[coreDisputeIDToLocal[_coreDisputeID]];
         require(_choice <= dispute.numberOfChoices, "Choice out of bounds");
 
         Round storage round = dispute.rounds[dispute.rounds.length - 1];
-        bool hiddenVotes = core.areVotesHidden(core.getSubcourtID(_coreDisputeID));
+        (uint96 subcourtID, , , , ) = core.disputes(_coreDisputeID);
+        (, bool hiddenVotes, , , , ) = core.courts(subcourtID);
 
         //  Save the votes.
         for (uint256 i = 0; i < _voteIDs.length; i++) {
@@ -370,7 +367,8 @@ contract DisputeKitClassic is BaseDisputeKit, IEvidence {
         require(block.timestamp >= appealPeriodStart && block.timestamp < appealPeriodEnd, "Appeal period is over.");
 
         uint256 multiplier;
-        if (this.currentRuling(_coreDisputeID) == _choice) {
+        (uint256 ruling, , ) = this.currentRuling(_coreDisputeID);
+        if (ruling == _choice) {
             multiplier = WINNER_STAKE_MULTIPLIER;
         } else {
             require(
@@ -441,11 +439,12 @@ contract DisputeKitClassic is BaseDisputeKit, IEvidence {
         uint256 _coreRoundID,
         uint256 _choice
     ) external returns (uint256 amount) {
-        require(core.isRuled(_coreDisputeID), "Dispute should be resolved.");
+        (, , , bool isRuled, ) = core.disputes(_coreDisputeID);
+        require(isRuled, "Dispute should be resolved.");
 
         Dispute storage dispute = disputes[coreDisputeIDToLocal[_coreDisputeID]];
         Round storage round = dispute.rounds[dispute.coreRoundIDToLocal[_coreRoundID]];
-        uint256 finalRuling = core.currentRuling(_coreDisputeID);
+        (uint256 finalRuling, , ) = core.currentRuling(_coreDisputeID);
 
         if (!round.hasPaid[_choice]) {
             // Allow to reimburse if funding was unsuccessful for this ruling option.
@@ -484,25 +483,35 @@ contract DisputeKitClassic is BaseDisputeKit, IEvidence {
     // *           Public Views            * //
     // ************************************* //
 
+    function getFundedChoices(uint256 _coreDisputeID) public view returns (uint256[] memory fundedChoices) {
+        Dispute storage dispute = disputes[coreDisputeIDToLocal[_coreDisputeID]];
+        Round storage lastRound = dispute.rounds[dispute.rounds.length - 1];
+        return lastRound.fundedChoices;
+    }
+
     /** @dev Gets the current ruling of a specified dispute.
      *  @param _coreDisputeID The ID of the dispute in Kleros Core.
      *  @return ruling The current ruling.
+     *  @return tied Whether it's a tie or not.
+     *  @return overridden Whether the ruling was overridden by appeal funding or not.
      */
-    function currentRuling(uint256 _coreDisputeID) external view override returns (uint256 ruling) {
+    function currentRuling(
+        uint256 _coreDisputeID
+    ) external view override returns (uint256 ruling, bool tied, bool overridden) {
         Dispute storage dispute = disputes[coreDisputeIDToLocal[_coreDisputeID]];
         Round storage round = dispute.rounds[dispute.rounds.length - 1];
-        ruling = round.tied ? 0 : round.winningChoice;
-    }
-
-    function getLastRoundResult(uint256 _coreDisputeID)
-        external
-        view
-        override
-        returns (uint256 winningChoice, bool tied)
-    {
-        Dispute storage dispute = disputes[coreDisputeIDToLocal[_coreDisputeID]];
-        Round storage lastRound = dispute.rounds[dispute.rounds.length - 1];
-        return (lastRound.winningChoice, lastRound.tied);
+        tied = round.tied;
+        ruling = tied ? 0 : round.winningChoice;
+        (, , KlerosCore.Period period, , ) = core.disputes(_coreDisputeID);
+        // Override the final ruling if only one side funded the appeals.
+        if (period == KlerosCore.Period.execution) {
+            uint256[] memory fundedChoices = getFundedChoices(_coreDisputeID);
+            if (fundedChoices.length == 1) {
+                ruling = fundedChoices[0];
+                tied = false;
+                overridden = true;
+            }
+        }
     }
 
     /** @dev Gets the degree of coherence of a particular voter. This function is called by Kleros Core in order to determine the amount of the reward.
@@ -519,7 +528,7 @@ contract DisputeKitClassic is BaseDisputeKit, IEvidence {
         // In this contract this degree can be either 0 or 1, but in other dispute kits this value can be something in between.
         Dispute storage dispute = disputes[coreDisputeIDToLocal[_coreDisputeID]];
         Vote storage vote = dispute.rounds[dispute.coreRoundIDToLocal[_coreRoundID]].votes[_voteID];
-        (uint256 winningChoice, bool tied) = core.getLastRoundResult(_coreDisputeID);
+        (uint256 winningChoice, bool tied, ) = core.currentRuling(_coreDisputeID);
 
         if (vote.voted && (vote.choice == winningChoice || tied)) {
             return ONE_BASIS_POINT;
@@ -536,7 +545,7 @@ contract DisputeKitClassic is BaseDisputeKit, IEvidence {
     function getCoherentCount(uint256 _coreDisputeID, uint256 _coreRoundID) external view override returns (uint256) {
         Dispute storage dispute = disputes[coreDisputeIDToLocal[_coreDisputeID]];
         Round storage currentRound = dispute.rounds[dispute.coreRoundIDToLocal[_coreRoundID]];
-        (uint256 winningChoice, bool tied) = core.getLastRoundResult(_coreDisputeID);
+        (uint256 winningChoice, bool tied, ) = core.currentRuling(_coreDisputeID);
 
         if (currentRound.totalVoted == 0 || (!tied && currentRound.counts[winningChoice] == 0)) {
             return 0;
@@ -616,17 +625,7 @@ contract DisputeKitClassic is BaseDisputeKit, IEvidence {
         uint256 _coreDisputeID,
         uint256 _coreRoundID,
         uint256 _voteID
-    )
-        external
-        view
-        override
-        returns (
-            address account,
-            bytes32 commit,
-            uint256 choice,
-            bool voted
-        )
-    {
+    ) external view override returns (address account, bytes32 commit, uint256 choice, bool voted) {
         Dispute storage dispute = disputes[coreDisputeIDToLocal[_coreDisputeID]];
         Vote storage vote = dispute.rounds[dispute.coreRoundIDToLocal[_coreRoundID]].votes[_voteID];
         return (vote.account, vote.commit, vote.choice, vote.voted);
@@ -646,20 +645,14 @@ contract DisputeKitClassic is BaseDisputeKit, IEvidence {
      *  @return Whether the address can be drawn or not.
      */
     function postDrawCheck(uint256 _coreDisputeID, address _juror) internal view override returns (bool) {
-        uint256 subcourtID = core.getSubcourtID(_coreDisputeID);
+        (uint96 subcourtID, , , , ) = core.disputes(_coreDisputeID);
         (uint256 lockedAmountPerJuror, , , , , ) = core.getRoundInfo(
             _coreDisputeID,
             core.getNumberOfRounds(_coreDisputeID) - 1
         );
-        (uint256 stakedTokens, uint256 lockedTokens) = core.getJurorBalance(_juror, uint96(subcourtID));
-        return stakedTokens >= lockedTokens + lockedAmountPerJuror;
-    }
-
-    /** @dev RNG function
-     *  @return rn A random number.
-     */
-    function getRandomNumber() internal returns (uint256) {
-        return rng.getUncorrelatedRN(block.number);
+        (uint256 stakedTokens, uint256 lockedTokens) = core.getJurorBalance(_juror, subcourtID);
+        (, , uint256 minStake, , , ) = core.courts(subcourtID);
+        return stakedTokens >= lockedTokens + lockedAmountPerJuror && stakedTokens >= minStake;
     }
 
     /** @dev Retrieves a juror's address from the stake path ID.

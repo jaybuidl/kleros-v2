@@ -7,14 +7,16 @@ const WINNER_STAKE_MULTIPLIER = 3000;
 const LOSER_STAKE_MULTIPLIER = 7000;
 const MULTIPLIER_DENOMINATOR = 10000;
 
+const RNG_LOOKAHEAD = 20;
+
 describe("DisputeKitClassic", async () => {
   // eslint-disable-next-line no-unused-vars
-  let deployer, claimant, supporter, challenger, innocentBystander;
-  let core, disputeKit, arbitrable;
+  let deployer;
+  let core, disputeKit;
 
   before("Deploying", async () => {
-    [deployer, claimant, supporter, challenger, innocentBystander] = await ethers.getSigners();
-    [core, disputeKit, arbitrable] = await deployContracts(deployer);
+    [deployer] = await ethers.getSigners();
+    [core, disputeKit] = await deployContracts(deployer);
   });
 
   it("Kleros Core initialization", async () => {
@@ -70,15 +72,16 @@ describe("DisputeKitClassic", async () => {
 });
 
 async function deployContracts(deployer) {
-  const constantNGFactory = await ethers.getContractFactory("ConstantNG", deployer);
-  const rng = await constantNGFactory.deploy(42);
+  const rngFactory = await ethers.getContractFactory("BlockHashRNG", deployer);
+  const rng = await rngFactory.deploy();
   await rng.deployed();
 
   const disputeKitFactory = await ethers.getContractFactory("DisputeKitClassic", deployer);
   const disputeKit = await disputeKitFactory.deploy(
     deployer.address,
     ethers.constants.AddressZero, // KlerosCore is set later once it is deployed
-    rng.address
+    rng.address,
+    RNG_LOOKAHEAD
   );
   await disputeKit.deployed();
 
@@ -106,9 +109,5 @@ async function deployContracts(deployer) {
 
   await disputeKit.changeCore(core.address);
 
-  const ArbitrableFactory = await ethers.getContractFactory("ArbitrableExample", deployer);
-  const arbitrable = await ArbitrableFactory.deploy(core.address, "uri://metaevidence.json");
-  await arbitrable.deployed();
-
-  return [core, disputeKit, arbitrable];
+  return [core, disputeKit];
 }

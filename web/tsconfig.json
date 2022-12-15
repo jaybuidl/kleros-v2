@@ -8,11 +8,17 @@
       "src*": [
         "./src*"
       ],
+      "utils*": [
+        "./src/utils*"
+      ],
       "assets*": [
         "./src/assets*"
       ],
       "components*": [
         "./src/components*"
+      ],
+      "connectors*": [
+        "./src/connectors*"
       ],
       "context*": [
         "./src/context*"
@@ -64,7 +70,9 @@
     "skipLibCheck": true,
     "allowSyntheticDefaultImports": true,
     "removeComments": true,
-    "isolatedModules": true
+    "isolatedModules": true,
+    "esModuleInterop": true,
+    "resolveJsonModule": true
   },
   "exclude": [
     "node_modules",

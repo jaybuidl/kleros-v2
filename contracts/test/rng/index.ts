@@ -1,33 +1,47 @@
 import { expect } from "chai";
-import { ethers } from "hardhat";
+import { ethers, network } from "hardhat";
 import { BigNumber } from "ethers";
+import { IncrementalNG, BlockHashRNG } from "../../typechain-types";
 
-describe("ConstantNG", async () => {
-  it("Should return always the same number", async () => {
-    const ConstantRNG = await ethers.getContractFactory("ConstantNG");
-    const constantRNG = await ConstantRNG.deploy(42);
-    await constantRNG.deployed();
+let rng, rngFactory;
+const initialNg = 424242;
 
-    expect(await constantRNG.getRN(0)).to.equal(42);
-    expect(await constantRNG.getRN(0)).to.equal(42);
-    expect(await constantRNG.getRN(437280)).to.equal(42);
-    expect(await constantRNG.getRN(437280)).to.equal(42);
+describe("IncrementalNG", async () => {
+  beforeEach("Setup", async () => {
+    rngFactory = await ethers.getContractFactory("IncrementalNG");
+    rng = (await rngFactory.deploy(initialNg)) as IncrementalNG;
+    await rng.deployed();
+  });
+
+  it("Should return a number incrementing each time", async () => {
+    expect(await rng.callStatic.receiveRandomness(689376)).to.equal(initialNg);
+    await rng.receiveRandomness(29543);
+    expect(await rng.callStatic.receiveRandomness(5894382)).to.equal(initialNg + 1);
+    await rng.receiveRandomness(0);
+    expect(await rng.callStatic.receiveRandomness(3465)).to.equal(initialNg + 2);
+    await rng.receiveRandomness(BigNumber.from(2).pow(255));
+    expect(await rng.callStatic.receiveRandomness(0)).to.equal(initialNg + 3);
   });
 });
 
-describe("IncrementalNG", async () => {
-  it("Should return a number incrementing each time", async () => {
-    const IncrementalNG = await ethers.getContractFactory("IncrementalNG");
-    const initialNg = 424242;
-    const incrementalNG = await IncrementalNG.deploy(initialNg);
-    await incrementalNG.deployed();
+describe("BlockHashRNG", async () => {
+  beforeEach("Setup", async () => {
+    rngFactory = await ethers.getContractFactory("BlockHashRNG");
+    rng = (await rngFactory.deploy()) as BlockHashRNG;
+    await rng.deployed();
+  });
 
-    expect(await incrementalNG.callStatic.getRN(689376)).to.equal(initialNg);
-    await incrementalNG.getRN(29543);
-    expect(await incrementalNG.callStatic.getRN(5894382)).to.equal(initialNg + 1);
-    await incrementalNG.getRN(0);
-    expect(await incrementalNG.callStatic.getRN(3465)).to.equal(initialNg + 2);
-    await incrementalNG.getRN(BigNumber.from(2).pow(255));
-    expect(await incrementalNG.callStatic.getRN(0)).to.equal(initialNg + 3);
+  it("Should return a non-zero number for a block number in the past", async () => {
+    const tx = await rng.receiveRandomness(9876543210);
+    const trace = await network.provider.send("debug_traceTransaction", [tx.hash]);
+    const [rn] = ethers.utils.defaultAbiCoder.decode(["uint"], `0x${trace.returnValue}`);
+    expect(rn).to.equal(0);
+  });
+
+  it("Should return zero for a block number in the future", async () => {
+    const tx = await rng.receiveRandomness(5);
+    const trace = await network.provider.send("debug_traceTransaction", [tx.hash]);
+    const [rn] = ethers.utils.defaultAbiCoder.decode(["uint"], `0x${trace.returnValue}`);
+    expect(rn).to.not.equal(0);
   });
 });
