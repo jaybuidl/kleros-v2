@@ -40,6 +40,7 @@ jobs:
         uses: changesets/action@c8bada60c408975afd1a20b3db81d6eee6789308 # v1.4.9
         with:
           version: yarn changeset version
-          commit: "chore: changeset version"
+          commit: "ci: changeset version"
+          publish: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
