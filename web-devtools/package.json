@@ -1,6 +1,6 @@
 {
   "name": "@kleros/kleros-v2-web-devtools",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "source": "src/index.html",
   "browserslist": "> 0.5%, not dead",
   "repository": "",

@@ -1,5 +1,12 @@
 # @kleros/kleros-v2-web-devtools
 
+## 0.1.2
+
+### Patch Changes
+
+- Updated dependencies [2890788]
+  - @kleros/kleros-sdk@2.1.13
+
 ## 0.1.1
 
 ### Patch Changes
