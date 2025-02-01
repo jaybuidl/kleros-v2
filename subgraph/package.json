@@ -3,6 +3,7 @@
   "version": "0.11.0",
   "drtVersion": "0.11.0",
   "license": "MIT",
+  "private": true,
   "scripts": {
     "update:core:arbitrum-sepolia-devnet": "./scripts/update.sh arbitrumSepoliaDevnet arbitrum-sepolia core/subgraph.yaml",
     "update:core:arbitrum-sepolia": "./scripts/update.sh arbitrumSepolia arbitrum-sepolia core/subgraph.yaml",

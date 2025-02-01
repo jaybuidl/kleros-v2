@@ -87,5 +87,8 @@
   "alias": {
     "process": "process/browser.js",
     "buffer": "buffer"
+  },
+  "dependencies": {
+    "@changesets/cli": "^2.27.12"
   }
 }
